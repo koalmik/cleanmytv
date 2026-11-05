@@ -94,9 +94,10 @@ class Visualiser {
         val n = bars
         val raw = DoubleArray(n)
         var loudest = 0.0
+        val edges = bandEdges(n, top)
         for (b in 0 until n) {
-            val lo = max(1, top.toDouble().pow(b.toDouble() / n).toInt())
-            val hi = max(lo + 1, top.toDouble().pow((b + 1).toDouble() / n).toInt()).coerceAtMost(top)
+            val lo = edges[b]
+            val hi = max(edges[b + 1], lo + 1)
             var sum = 0.0
             for (k in lo until hi) sum += hypot(fft[2 * k].toDouble(), fft[2 * k + 1].toDouble())
             val mean = sum / (hi - lo)
@@ -124,5 +125,41 @@ class Visualiser {
         }
     }
 
+    private var edgesFor = 0L
+    private var edgesCache = IntArray(0)
+
+    /** Band edges for [n] bars over FFT bins 1 until [top], worked out once per bar count. */
+    private fun bandEdges(n: Int, top: Int): IntArray {
+        val key = n.toLong() shl 32 or top.toLong()
+        if (key != edgesFor) {
+            edgesCache = logBands(n, top)
+            edgesFor = key
+        }
+        return edgesCache
+    }
+
     private companion object { const val TAG = "CMTVHome" }
+}
+
+/**
+ * Edges of [n] log-spaced bands over FFT bins 1 until [top]: band b reads bins edges[b] until edges[b + 1].
+ * A plain log scale gives the lowest bars the same bin (at 32 bars the first four all read bin 1, the next
+ * ones go in pairs), so they moved as one block. Here every band gets at least one bin of its own and the
+ * log spacing takes over once the bands are wider than a bin. Only when there are more bars than bins do
+ * neighbours share one.
+ */
+fun logBands(n: Int, top: Int): IntArray {
+    val edges = IntArray(n + 1)
+    if (top - 1 < n) {
+        // The caller reads at least one bin per band, so neighbours here may share one.
+        for (b in 0..n) edges[b] = 1 + (top - 1) * b / n
+        return edges
+    }
+    edges[0] = 1
+    for (b in 1..n) {
+        val ideal = Math.round(top.toDouble().pow(b.toDouble() / n)).toInt()
+        // At least one bin past the last edge, and room left for one bin per band still to come.
+        edges[b] = ideal.coerceAtLeast(edges[b - 1] + 1).coerceAtMost(top - (n - b))
+    }
+    return edges
 }

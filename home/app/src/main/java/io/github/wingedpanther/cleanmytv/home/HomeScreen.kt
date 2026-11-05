@@ -58,7 +58,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,6 +80,7 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
@@ -110,9 +110,10 @@ import androidx.tv.material3.Text
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.text.DateFormat
+import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
+import java.util.Locale
 
 // CleanMyTV's dark world: warm off-white and sand text on the green-black ground.
 private val TEXT = Color(0xFFF0EBE5)
@@ -161,20 +162,43 @@ private class Home(all: List<TvApp>, val cfg: HomeConfig) {
 }
 
 @Composable
-fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.runtime.MutableState<String?>) {
+/**
+ * The wallpaper, halved as often as it stays at least as wide as the screen, so a big picture doesn't take
+ * a 1 GB TV's memory. A failure is logged instead of silently leaving the plain background.
+ */
+private fun decodeWallpaper(path: String, screenWidth: Int): ImageBitmap? = try {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    var sample = 1
+    while (screenWidth > 0 && bounds.outWidth / (sample * 2) >= screenWidth) sample *= 2
+    val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+    if (bmp == null) Log.w(TAG, "wallpaper: could not decode $path (${bounds.outWidth}x${bounds.outHeight})")
+    bmp?.asImageBitmap()
+} catch (t: Throwable) {
+    Log.w(TAG, "wallpaper: $t")
+    null
+}
+
+@Composable
+fun HomeScreen(visualiser: Visualiser, appsVersion: Int, shownVersion: Int, open: androidx.compose.runtime.MutableState<String?>) {
     val ctx = LocalContext.current
     val cfg by ConfigStore.config.collectAsState()
     val wallVersion by ConfigStore.wallpaperVersion.collectAsState()
     var apps by remember { mutableStateOf<List<TvApp>>(emptyList()) }
     var inputs by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     val glyphs = cfg.iconStyle != "banner"
+    // Apps reload only when a package is added, removed, enabled or disabled: reading every icon on each
+    // return to Home kept a 1 GB TV busy for nothing.
     LaunchedEffect(appsVersion, glyphs) {
         apps = withContext(Dispatchers.Default) { loadApps(ctx, glyphs) }
+    }
+    // Input names come from HDMI-CEC and can change while Home is away, and reading them is cheap.
+    LaunchedEffect(shownVersion) {
         inputs = withContext(Dispatchers.Default) { tvInputs(ctx) }
     }
     // Animations off in the TV's settings (or from CleanMyTV): Home stops moving too.
     var motion by remember { mutableStateOf(true) }
-    LaunchedEffect(appsVersion) {
+    LaunchedEffect(shownVersion) {
         motion = runCatching { android.provider.Settings.Global.getFloat(ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f) }.getOrDefault(1f) > 0f
     }
     var wallpaper by remember { mutableStateOf<ImageBitmap?>(null) }
@@ -183,7 +207,7 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.
     LaunchedEffect(wallVersion) {
         wallpaper = withContext(Dispatchers.IO) {
             val f = ConfigStore.wallpaper(ctx)
-            if (f.exists()) runCatching { BitmapFactory.decodeFile(f.path)?.asImageBitmap() }.getOrNull() else null
+            if (f.exists()) decodeWallpaper(f.path, ctx.resources.displayMetrics.widthPixels) else null
         }
         // A new wallpaper, not the one Home opened with, comes in like a sunrise.
         val fresh = wallSeen != null && wallSeen != wallVersion
@@ -193,9 +217,10 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.
     // Idle screen: no button pressed for cfg.idleMinutes, and nothing open over Home. Any button wakes it,
     // and that press only wakes it, so it can't open the app that happens to have focus.
     var idle by remember { mutableStateOf(false) }
-    var lastPress by remember { mutableLongStateOf(0L) }
+    // A plain holder, not state: writing state on every button press recomposed the whole home screen.
+    val lastPress = remember { LongArray(1) }
     var swallowUp by remember { mutableStateOf(false) }
-    LaunchedEffect(appsVersion) { idle = false; lastPress = System.currentTimeMillis() } // Home came back into view
+    LaunchedEffect(shownVersion) { idle = false; lastPress[0] = System.currentTimeMillis() } // Home came back into view
 
     LaunchedEffect(cfg.vizBars, cfg.vizSensitivity, cfg.visualiser, idle) {
         visualiser.bars = cfg.vizBars
@@ -215,7 +240,7 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.
         }
     }
 
-    val home = Home(apps, cfg)
+    val home = remember(apps, cfg) { Home(apps, cfg) }
     val accent = Color(cfg.accent)
     // Quick-settings icons this TV can actually open; Inputs only on TVs that have inputs.
     val all = remember { quickActions() }
@@ -229,19 +254,30 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.
             }.toMap()
         }
     }
-    val byPkg = apps.associateBy { it.pkg }
-    val quick = cfg.quick.mapNotNull { id ->
-        HomeConfig.quickApp(id)?.let { p -> byPkg[p]?.let { appAction(it, quickIcons[p]) } } ?: all[id]
-    }.filter { canOpen(ctx, it, inputs.isNotEmpty()) }
+    // canOpen asks the package manager, so this is worked out when its inputs change, not on every frame.
+    val hasInputs = inputs.isNotEmpty()
+    val quick = remember(cfg.quick, apps, quickIcons, hasInputs) {
+        val byPkg = apps.associateBy { it.pkg }
+        cfg.quick.mapNotNull { id ->
+            HomeConfig.quickApp(id)?.let { p -> byPkg[p]?.let { appAction(it, quickIcons[p]) } } ?: all[id]
+        }.filter { canOpen(ctx, it, hasInputs) }
+    }
     var openFolder by remember { mutableStateOf<Pair<String, List<TvApp>>?>(null) }
     var showInputs by remember { mutableStateOf(false) }
     var showPanel by remember { mutableStateOf(false) }
     var showThemes by remember { mutableStateOf(false) }
     var panelPin by remember { mutableStateOf(false) }
     val openPanel = { if (Lock.needsPin(ctx, Lock.PANEL)) panelPin = true else showPanel = true }
-    LaunchedEffect(lastPress, cfg.idleMinutes, openFolder, showInputs, showPanel, showThemes) {
-        if (cfg.idleMinutes == 0 || openFolder != null || showInputs || showPanel || showThemes) return@LaunchedEffect
-        delay(cfg.idleMinutes * 60_000L)
+    LaunchedEffect(idle, cfg.idleMinutes, openFolder, showInputs, showPanel, showThemes) {
+        if (idle || cfg.idleMinutes == 0 || openFolder != null || showInputs || showPanel || showThemes) return@LaunchedEffect
+        lastPress[0] = System.currentTimeMillis()
+        val wait = cfg.idleMinutes * 60_000L
+        // Sleeps until the last press is that old, so a button press costs nothing here.
+        while (true) {
+            val left = lastPress[0] + wait - System.currentTimeMillis()
+            if (left <= 0) break
+            delay(left)
+        }
         idle = true
     }
     val shown by animateFloatAsState(if (idle) 0f else 1f, tween(if (idle) 1200 else 250), label = "idle")
@@ -257,19 +293,22 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.
         if (a.id == "inputs") showInputs = true
         else if (a.id == "panel") openPanel()
         else if (a.id == "themes") showThemes = true
-        else if (a.id == "music") ConfigStore.update(ctx, org.json.JSONObject().put("visualiser", !cfg.visualiser))
+        else if (a.id == "music") runCatching { ConfigStore.update(ctx, org.json.JSONObject().put("visualiser", !cfg.visualiser)) }.onFailure { Log.w(TAG, "music bars: $it") }
         else resolve(ctx, a)?.let { i -> runCatching { ctx.startActivity(i) }.onFailure { Log.w(TAG, "${a.id}: $it") } }
     }
     val first = remember { FocusRequester() }
     LaunchedEffect(home.first, cfg.layout) { if (home.first != null) runCatching { first.requestFocus() } }
     var focusColour by remember { mutableStateOf<Color?>(null) }
     val tint by animateColorAsState(focusColour ?: Color.Transparent, tween(600), label = "tint")
-    val ui = Ui(cfg, accent, first, home.first, onFolder = { openFolder = it }, track = track, weather = weather,
-        onFocusApp = { a -> focusColour = a.colour?.let { Color(it) } }, motion = motion)
+    // The same Ui while nothing in it changes, so the layouts can skip recomposing.
+    val ui = remember(cfg, home.first, track, weather, motion) {
+        Ui(cfg, accent, first, home.first, onFolder = { openFolder = it }, track = track, weather = weather,
+            onFocusApp = { a -> focusColour = a.colour?.let { Color(it) } }, motion = motion)
+    }
 
     Box(
         Modifier.fillMaxSize().background(Color(cfg.background)).onPreviewKeyEvent { e ->
-            lastPress = System.currentTimeMillis()
+            lastPress[0] = System.currentTimeMillis()
             if (e.type == KeyEventType.KeyDown) Motion.seen(e.key)
             when {
                 idle && e.type == KeyEventType.KeyDown -> { idle = false; swallowUp = true; true }
@@ -284,7 +323,8 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, open: androidx.compose.
         }
         if (intro.value < 1f) Sunrise(intro.value)
         // The focused app's colour washes in from the top; the wallpaper still shows through.
-        if (cfg.followColour) Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(tint.copy(alpha = tint.alpha * 0.5f), Color.Transparent))))
+        // Read while drawing, so the colour fading in redraws this layer only, not the whole screen.
+        if (cfg.followColour) Box(Modifier.fillMaxSize().drawBehind { drawRect(Brush.verticalGradient(listOf(tint.copy(alpha = tint.alpha * 0.5f), Color.Transparent))) })
         Box(Modifier.fillMaxSize().graphicsLayer { alpha = shown }) {
             // Rows sit over the lower half of the photo; a ground-tinted shade keeps their names readable.
             Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.35f to Color.Transparent, 1f to scrim(0.8f))))
@@ -891,11 +931,17 @@ private fun Greeting(cfg: HomeConfig, size: androidx.compose.ui.unit.TextUnit) {
 @Composable
 private fun Clock(cfg: HomeConfig, timeSize: androidx.compose.ui.unit.TextUnit, dateSize: androidx.compose.ui.unit.TextUnit, align: Alignment.Horizontal) {
     if (cfg.clock == "off") return
+    val ctx = LocalContext.current
+    // English like the rest of Home, so the date doesn't come out in another language than the greeting.
+    // 24 or 12 hours follows the TV's own setting, read again each tick since Quick settings can change it.
     var now by remember { mutableStateOf(Date()) }
+    val h24 = remember(now) { android.text.format.DateFormat.is24HourFormat(ctx) }
+    val timeFormat = remember(h24) { SimpleDateFormat(if (h24) "HH:mm" else "h:mm a", Locale.ENGLISH) }
+    val dateFormat = remember { SimpleDateFormat("EEEE, d MMMM", Locale.ENGLISH) }
     LaunchedEffect(Unit) { while (true) { now = Date(); delay(1000L - System.currentTimeMillis() % 1000) } }
     Column(horizontalAlignment = align) {
-        Text(DateFormat.getTimeInstance(DateFormat.SHORT).format(now), color = TEXT, fontSize = timeSize, fontFamily = CLOCK, fontWeight = FontWeight.Light, maxLines = 1, softWrap = false)
-        if (cfg.clock == "time_date") Text(DateFormat.getDateInstance(DateFormat.FULL).format(now), color = MUTED, fontSize = dateSize, fontFamily = CLOCK)
+        Text(timeFormat.format(now), color = TEXT, fontSize = timeSize, fontFamily = CLOCK, fontWeight = FontWeight.Light, maxLines = 1, softWrap = false)
+        if (cfg.clock == "time_date") Text(dateFormat.format(now), color = MUTED, fontSize = dateSize, fontFamily = CLOCK)
     }
 }
 

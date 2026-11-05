@@ -28,8 +28,10 @@ data class TvApp(val pkg: String, val label: String, val art: ImageBitmap, val b
 
 class MainActivity : ComponentActivity() {
     private val visualiser = Visualiser()
-    /** Bumped when apps are installed or removed, or Home comes back into view, so the list reloads. */
+    /** Bumped when apps are installed, removed, enabled or disabled, so the list reloads. */
     private val appsVersion = mutableIntStateOf(0)
+    /** Bumped each time Home comes back into view: wakes the idle screen and rereads the inputs. */
+    private val shownVersion = mutableIntStateOf(0)
     /** Something a remote button asked Home to open; HomeScreen clears it. */
     private val open = androidx.compose.runtime.mutableStateOf<String?>(null)
 
@@ -42,7 +44,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         ConfigStore.load(this)
         open.value = intent.getStringExtra(OPEN)
-        setContent { HomeScreen(visualiser, appsVersion.intValue, open) }
+        setContent { HomeScreen(visualiser, appsVersion.intValue, shownVersion.intValue, open) }
         window.decorView.post { Log.i(TAG, "first frame ${SystemClock.uptimeMillis() - created} ms after onCreate") }
         registerReceiver(packages, IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
@@ -65,7 +67,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        appsVersion.intValue++
+        shownVersion.intValue++
     }
 
     override fun onStop() {

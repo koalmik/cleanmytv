@@ -228,6 +228,8 @@ export function Debloat({ status, go, markDone }: ScreenProps): ReactNode {
             <div className="notice">No restore point yet. The app saves one before the first package is switched off.</div>
           )}
 
+          {plan.otherSystem && <div className="notice warn">{plan.otherSystem}</div>}
+
           {stockHome && (
             <div className="notice warn">
               This list switches off <code>{plan.homePackage}</code>, which is your Home screen right now. The app skips it until

@@ -460,6 +460,17 @@ describe('stock launchers other than Google\'s (#39)', () => {
   })
   afterAll(() => { T.disconnect(); server.close() })
 
+  it('warns when a list is for another system than the TV runs', () => {
+    const googleTvList = ['Haier H32S80EFX, Google TV 14', 'Stock launcher: com.google.android.apps.tv.launcherx (pass it as STOCK_LAUNCHER).']
+    // An Android TV: the old launcher, switched off by the handover, is still installed.
+    const androidTv = new Set(['com.google.android.tvlauncher', 'com.haier.apps'])
+    expect(D.otherSystem(googleTvList, androidTv)).toMatch(/launcherx.*com\.google\.android\.tvlauncher/)
+    expect(D.otherSystem(googleTvList, new Set(['com.google.android.apps.tv.launcherx']))).toBeUndefined()
+    // No launcher we know of on the TV: nothing to compare with.
+    expect(D.otherSystem(googleTvList, new Set(['com.haier.apps']))).toBeUndefined()
+    expect(D.otherSystem(['No launcher named here'], androidTv)).toBeUndefined()
+  })
+
   it('knows the vendor launchers upstream lists name', () => {
     expect(D.stockLaunchers()).toEqual(expect.arrayContaining(['com.tcl.cyberui', 'com.jamdeo.tv.vod', 'ru.sberdevices.starlauncher']))
     expect(D.stockLaunchers()).not.toContain('com.android.tv.settings')

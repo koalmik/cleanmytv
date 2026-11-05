@@ -103,6 +103,11 @@ export interface DebloatPlan {
   record?: { path: string; created: string }
   /** Package that owns Home right now. */
   homePackage: string | null
+  /**
+   * Set when the list was written for another kind of system than this TV runs: its stock launcher isn't
+   * on the TV, and another one is (a Google TV list on an Android TV, or the other way round).
+   */
+  otherSystem?: string
 }
 
 export interface DebloatApplyRequest {

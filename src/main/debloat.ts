@@ -530,8 +530,22 @@ export async function plan(listId: string): Promise<DebloatPlan> {
     header: parsed.header,
     entries,
     record: record ? { path: rpath, created: record.created } : undefined,
-    homePackage: home ? home.split('/')[0] : null
+    homePackage: home ? home.split('/')[0] : null,
+    otherSystem: listId === 'custom' ? undefined : otherSystem(parsed.header, installed)
   }
+}
+
+/**
+ * Lists name the stock launcher of the TV they were written on. When that one isn't on this TV and another
+ * stock launcher is, the list is for another system: Google TV (launcherx) and Android TV (tvlauncher) ship
+ * different packages, so a list from the same brand can still miss what weighs on this TV.
+ */
+export function otherSystem(header: string[], installed: Set<string>): string | undefined {
+  const named = /\bstock launcher:\s*([A-Za-z][\w]*(?:\.\w+)+)/i.exec(header.join('\n'))?.[1]
+  if (!named || installed.has(named)) return undefined
+  const here = stockLaunchers().filter((p) => p !== named && installed.has(p))
+  if (!here.length) return undefined
+  return `This list was written for a TV whose stock launcher is ${named}; this TV has ${here.join(', ')}. That is usually another system (Google TV and Android TV differ), so the list misses packages this TV runs and may switch off ones it needs. Pick a list for a TV with ${here[0]} if there is one, or check each package before applying.`
 }
 
 function addedEntry(pkg: string, state: PackageState, common: Map<string, { count: number; note: string }>, recorded?: PackageState): DebloatEntry {

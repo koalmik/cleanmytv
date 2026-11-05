@@ -81,7 +81,11 @@ export interface ConnectOptions {
 
 export class AdbClient {
   private socket!: Socket
-  private buffer = Buffer.alloc(0)
+  private buffer: Buffer = Buffer.alloc(0)
+  private pending: Buffer[] = []
+  private pendingBytes = 0
+  /** Bytes needed before parsing is worth trying: a header, or a header plus the packet it announces. */
+  private needBytes = 24
   private waiters: Array<(p: Packet) => void> = []
   /** Rejects the handshake read in progress when the connection fails, instead of letting it time out. */
   private abortRead: ((err: AdbError) => void) | null = null
@@ -195,7 +199,24 @@ export class AdbClient {
   }
 
   private onData(chunk: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, chunk])
+    // Chunks wait in a list until a whole packet is there, then are joined once. Joining on every chunk
+    // copied a large answer (a screenshot in base64, a 64 KB write) again with each piece that arrived.
+    this.pending.push(chunk)
+    this.pendingBytes += chunk.length
+    if (this.pendingBytes < this.needBytes) return
+    this.buffer = this.pending.length === 1 ? this.pending[0] : Buffer.concat(this.pending, this.pendingBytes)
+    this.pending = []
+    this.pendingBytes = 0
+    this.parse()
+    if (this.buffer.length) {
+      this.pending = [this.buffer]
+      this.pendingBytes = this.buffer.length
+    }
+    this.needBytes = this.buffer.length >= 24 ? 24 + this.buffer.readUInt32LE(12) : 24
+    this.buffer = Buffer.alloc(0)
+  }
+
+  private parse(): void {
     while (this.buffer.length >= 24) {
       const len = this.buffer.readUInt32LE(12)
       // We told the device our maximum in CNXN; a bigger packet or a broken header is not adbd.

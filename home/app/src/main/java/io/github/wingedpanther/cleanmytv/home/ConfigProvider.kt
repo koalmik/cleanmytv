@@ -76,11 +76,13 @@ class ConfigProvider : ContentProvider() {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(f.path, bounds)
                 if (bounds.outWidth <= 0) throw IllegalArgumentException("that is not a picture")
-                f.renameTo(ConfigStore.wallpaper(ctx))
+                // A failed swap must not read as success on the computer while the old picture stays.
+                if (!f.renameTo(ConfigStore.wallpaper(ctx))) throw IllegalStateException("could not swap the new wallpaper in")
                 ConfigStore.wallpaperChanged()
             }
             "wallpaper_remove" -> {
-                ConfigStore.wallpaper(ctx).delete()
+                val w = ConfigStore.wallpaper(ctx)
+                if (w.exists() && !w.delete()) throw IllegalStateException("could not remove the wallpaper")
                 ConfigStore.update(ctx, JSONObject().put("wallpaper_from", ""))
                 ConfigStore.wallpaperChanged()
             }
