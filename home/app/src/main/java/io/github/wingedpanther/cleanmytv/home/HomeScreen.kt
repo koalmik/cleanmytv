@@ -207,7 +207,7 @@ fun HomeScreen(visualiser: Visualiser, appsVersion: Int, shownVersion: Int, open
     LaunchedEffect(wallVersion) {
         wallpaper = withContext(Dispatchers.IO) {
             val f = ConfigStore.wallpaper(ctx)
-            if (f.exists()) decodeWallpaper(f.path, ctx.resources.displayMetrics.widthPixels) else null
+            if (f.exists()) decodeWallpaper(f.path, android.content.res.Resources.getSystem().displayMetrics.widthPixels) else null
         }
         // A new wallpaper, not the one Home opened with, comes in like a sunrise.
         val fresh = wallSeen != null && wallSeen != wallVersion
