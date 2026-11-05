@@ -161,7 +161,6 @@ private class Home(all: List<TvApp>, val cfg: HomeConfig) {
     }
 }
 
-@Composable
 /**
  * The wallpaper, halved as often as it stays at least as wide as the screen, so a big picture doesn't take
  * a 1 GB TV's memory. A failure is logged instead of silently leaving the plain background.
